@@ -32,7 +32,7 @@ def solve(groups, max_transactions_pp, payment_methods):
     # retrieve converted data
     people, friends, balances, shared_methods = prepare_data(groups, payment_methods)
 
-    big_M = 1_000_000_000_000
+    big_M = max(abs(balances[p]) for p in people)
 
     # define parameter C[p1, p2] as the maximum absolute value of the balances of the respective trading partners p1 and p2
     # c[p1, p2] = max {|bp1|, |bp2|} for all p1€P and p2€Fp1
@@ -81,60 +81,47 @@ def solve(groups, max_transactions_pp, payment_methods):
         GRB.MINIMIZE
     )
 
+
     ###############
     # Constraints #
     ###############
 
     # Set Zp to 1 if the person p has positive net balance, meaning p should receive funds.
-    # model.addConstrs(
-    #     balances[p] <= big_M * z[p] for p in people
-    # )
-
-    for p in people:
-        
-        print(f"P = {p:13} and balance is: {balances[p]}")
-        
-        model.addConstr(
-            balances[p] <= 9999999999* z[p]
-        )
-
-  
+    model.addConstrs(
+        balances[p] <= big_M * z[p] for p in people
+    )
 
 
 
-    # # if x > 0 => Y = 1, meaning htat p1 sends p2 money. M >= max absolute value of net balances of the two respective transaction partners
-    # # for not calculating arbitrary M_y's for any pair of transaction partners, we define M as max of all net balances, thus making it equal to M_z
-    # # M_y = M_z
-    # model.addConstrs(
-    #     big_M * y[p1, p2, m] >= x[p1, p2, m] for p1 in people for p2 in friends[p1] for m in shared_methods[p1, p2]
-    # )
+    # if x > 0 => Y = 1, meaning that p1 sends p2 money. M >= max absolute value of net balances of the two respective transaction partners
+    # for not calculating arbitrary M_y's for any pair of transaction partners, we define M as max of all net balances
+    model.addConstrs(
+        big_M * y[p1, p2, m] >= x[p1, p2, m] for p1 in people for p2 in friends[p1] for m in shared_methods[p1, p2]
+    )
 
 
-    # # if a person p2 has positive balance (z_p2 = 1), that means that all receiving funds from any person to p2 must sum up tp b_p2.
-    # model.addConstrs(
-    #     z[p2] * balances[p2] == quicksum(x[p1, p2, m] for p1 in friends[p2] for m in shared_methods[p1, p2]) for p2 in people
-    # )
+    # if a person p2 has positive balance (z_p2 = 1), that means that all receiving funds minus payments made must sum up to b_p2.
+    model.addConstrs(
+        z[p2] * balances[p2] == quicksum(x[p1, p2, m] for p1 in friends[p2] for m in shared_methods[p1, p2]) 
+        - quicksum(x[p2, p1, m] for p1 in friends[p2] for m in shared_methods[p1, p2]) for p2 in people
+    )
 
 
-    # # between 2 people p1, p2 at most one method of payments can be used.
-    # model.addConstrs(
-    #     quicksum(y[p1, p2, m] for m in shared_methods[p1, p2]) <= 1 for p1 in people for p2 in friends[p1]
-    # )
+    # between 2 people p1, p2 at most one method of payments can be used.
+    model.addConstrs(
+        quicksum(y[p1, p2, m] for m in shared_methods[p1, p2]) <= 1 for p1 in people for p2 in friends[p1]
+    )
 
-    # # a single person must not make more than max_transactions_pp transactions
-    # model.addConstrs(
-    #     quicksum(y[p1, p2, m] for p2 in friends[p1] for m in shared_methods[p1, p2]) <= max_transactions_pp for p1 in people
-    # )
-
-
-    # # A transaction must not be higher than max{ |b_p1|, |b_p2|}. Parameter c[p1, p2] pre-computes this term.
-    # model.addConstrs(
-    #     x[p1, p2, m] <= c[p1, p2] for p1 in people for p2 in friends[p1] for m in shared_methods[p1, p2]
-    # )
+    # a single person must not make more than max_transactions_pp transactions
+    model.addConstrs(
+        quicksum(y[p1, p2, m] for p2 in friends[p1] for m in shared_methods[p1, p2]) <= max_transactions_pp for p1 in people
+    )
 
 
-
-
+    # A transaction must not be higher than max{ |b_p1|, |b_p2|}. Parameter c[p1, p2] pre-computes this term.
+    model.addConstrs(
+        x[p1, p2, m] <= c[p1, p2] for p1 in people for p2 in friends[p1] for m in shared_methods[p1, p2]
+    )
 
 
 
@@ -148,7 +135,7 @@ def solve(groups, max_transactions_pp, payment_methods):
         print(f'\nObjective: {model.ObjVal}\n')
         print(f'\n====== Balances =====')
         for p in people:
-            print(f'{p} is at {round(balances[p],2)} and Z is {z[p].X}')
+            print(f'{p} is at {round(balances[p],2)}')
         print('\n====== Flow =====')
         for p1 in people:
             for p2 in friends[p1]:
@@ -157,20 +144,4 @@ def solve(groups, max_transactions_pp, payment_methods):
                         if round(x[p1, p2, m].x,2) > 0:
                             print(f'{p1} gives {p2} {round(x[p1, p2, m].x,2)} EUR via {m}')
 
-        # print(f'\n====== Variable Z - if z=1 => p€people should receive funds. =====')
-        # for p in people:
-        #     print(f"{people:20} | ")
-        
-        
-        
-        print(f'\n====== Balances after processed transactions: =====')
-        for p1 in people:
-            incoming = quicksum(x[p2, p1, m].X for p2 in friends[p1] for m in shared_methods[p1, p2]).getValue()
-            outgoing = quicksum(x[p1, p2, m].X for p2 in friends[p1] for m in shared_methods[p1, p2]).getValue()
-            print(f"{p1} is at {balances[p1] - incoming + outgoing}")
-
-
-
-
     return model
-
